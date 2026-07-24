@@ -214,6 +214,12 @@ class WamClient:
 
         # For some API the speaker has no response.
         if not api_call.expected_response:
+            # Close the per-request writer here — we return before the
+            # try/finally below that would otherwise close it, so without
+            # this every no-response call (get_feature, set_trick_mode, …)
+            # leaks a socket/fd and a speaker connection slot.
+            writer.close()
+            await writer.wait_closed()
             return ApiResponse()
 
         # Wait for correct response.
