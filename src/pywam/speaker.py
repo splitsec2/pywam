@@ -558,7 +558,7 @@ class Speaker:
         """
         await self.client.request(api_call.set_select_radio())
         response = await self.client.request(api_call.get_preset_list(0, 30))
-        if response.get_key("cpname") == "tunein":
+        if response.get_key("cpname") == "TuneIn":
             return response.get_subkey("presetlist", "preset")
         else:
             raise ApiCallError(f"({self.ip}) API call failed")
