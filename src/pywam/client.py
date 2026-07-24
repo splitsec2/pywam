@@ -214,6 +214,12 @@ class WamClient:
 
         # For some API the speaker has no response.
         if not api_call.expected_response:
+            # Close the per-request writer here — we return before the
+            # try/finally below that would otherwise close it, so without
+            # this every no-response call (get_feature, set_trick_mode, …)
+            # leaks a socket/fd and a speaker connection slot.
+            writer.close()
+            await writer.wait_closed()
             return ApiResponse()
 
         # Wait for correct response.
@@ -307,7 +313,21 @@ class WamClient:
                 ApiResponse object to be returned to caller.
         """
         if self._response_queue:
-            await self._response_queue.put(api_response)
+            try:
+                self._response_queue.put_nowait(api_response)
+            except asyncio.QueueFull:
+                # The waiter has already received (or will match) its
+                # response; this is a trailing message — e.g. a pushed event
+                # arriving right after the matched response in the same socket
+                # read. It was already handed to subscribers by
+                # _dispatch_event() above, so drop it here instead of blocking
+                # the listener task on a full, unconsumed queue (which would
+                # wedge the connection until a full reconnect).
+                _LOGGER.debug(
+                    "(%s) response queue full; dropping already-dispatched "
+                    "trailing message",
+                    self._ip,
+                )
 
     async def _wait_for_response(self, api_call: ApiCall) -> ApiResponse:
         """ Wait for the correct response from speaker.

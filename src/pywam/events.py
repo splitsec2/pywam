@@ -14,7 +14,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from pywam.lib.helpers import listify
+from pywam.lib.helpers import listify, timelength_to_sec
 from pywam.lib.validate import is_integer
 
 if TYPE_CHECKING:
@@ -75,22 +75,26 @@ class WamEvents:
 
     def _dispatch_event(self, used: bool, event: ApiResponse) -> None:
         """Send events to subscriber."""
+        # Compute the state change once and advance the last-known state once,
+        # so EVERY subscriber is notified. Previously the diff and the state
+        # update lived inside the loop with early `return`s, so only the first
+        # subscriber (in dict order) ever fired.
+        changed: dict | None = None
+        if used:
+            old = self._latest_known_state
+            new = self._attr.get_state_copy()
+            if new != old:
+                changed = {key: new[key] for key in old if new[key] != old[key]}
+            self._latest_known_state = new
         for subscriber, info_level in self._subscriber.items():
             try:
                 if info_level == 2:
                     subscriber(event)
-                    return
-                if used:
-                    old = self._latest_known_state
-                    new = self._attr.get_state_copy()
-                    if new == old:
-                        return
+                elif changed is not None:
                     if info_level == 1:
-                        changed = {key: new[key] for key in old if new[key] != old[key]}
                         subscriber(changed)
-                    if info_level == 0:
+                    elif info_level == 0:
                         subscriber()
-                    self._latest_known_state = new
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception(
                     "(%s) Could not dispatch event from speaker", self._speaker.ip
@@ -1462,16 +1466,9 @@ class WamEvents:
 
         # TODO: Doesn't comply with how we do other things. This should be done in the
         # attributes module.
-        timelength = str(event.get_key("timelength", "0")).replace(".", ":")
-        try:
-            tl = int(
-                sum(
-                    x * int(t)
-                    for x, t in zip([3600, 60, 1, 0.001], timelength.split(":"))
-                )
-            )
-        except Exception:
-            tl = 0
+        # Use the shared helper (right-aligns the fields), instead of an inline
+        # front-aligned zip that mis-reads any format shorter than HH:MM:SS.uuu.
+        tl = timelength_to_sec(str(event.get_key("timelength", "0")))
         self._attr._tracklength = str(tl)
 
         return True
