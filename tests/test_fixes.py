@@ -30,17 +30,17 @@ def _ok(method: str = "", data=None) -> ApiResponse:
 
 
 # ======================================================================
-# Fix 1: update() tolerates source-unsupported calls, keyed by source
+# Fix 1: player and radio queries are only made in a source with a player
 # ======================================================================
 
 
 class _RecordingClient:
     """Stand-in for WamClient.request that records calls and can time out.
 
-    Methods listed in ``timeout_methods`` raise ApiCallTimeoutError (as a
-    real speaker does when the query is meaningless for the active
-    source, e.g. shuffle/repeat/presets on an HDMI input); every other
-    call returns a benign successful response.
+    Methods listed in ``timeout_methods`` raise ApiCallTimeoutError, as a
+    real speaker does when the query has no meaning for the active source
+    (shuffle/repeat/presets on an HDMI input); every other call returns a
+    benign successful response.
     """
 
     def __init__(self, timeout_methods: set[str]) -> None:
@@ -55,50 +55,50 @@ class _RecordingClient:
 
 
 @pytest.mark.asyncio
-async def test_update_player_info_tolerates_unanswered_calls_per_source():
-    """update_player_info() must not abort when the speaker ignores the
-    optional shuffle/repeat queries (HDMI source), and must cache the
-    skip keyed by source so a source change retries it."""
+async def test_update_player_info_skips_player_queries_outside_wifi():
+    """update_player_info() must not issue the player queries in a source
+    without a player, where the speaker never answers them."""
     speaker = Speaker(TEST_IP)
     fake = _RecordingClient(timeout_methods={"GetShuffleMode", "GetRepeatMode"})
     speaker.client.request = fake.request  # type: ignore[assignment]
 
-    # Active source is an external HDMI input.
-    speaker.attribute._function = "hdmi"
-
-    # On all-fixes this completes; on master the raw request() for
-    # GetShuffleMode raises ApiCallTimeoutError straight out.
+    speaker.attribute._function = "hdmi1"
     await speaker.update_player_info()
 
-    # The unanswered optional calls were cached, keyed by the source.
-    assert ("hdmi", "GetShuffleMode") in speaker._unsupported
-    assert ("hdmi", "GetRepeatMode") in speaker._unsupported
-
-    # A second pass in the SAME source skips them (request not re-issued).
-    calls_before = fake.calls.count("GetShuffleMode")
-    await speaker.update_player_info()
-    assert fake.calls.count("GetShuffleMode") == calls_before
-
-    # Changing the source re-enables the query (per-source, not permanent).
-    speaker.attribute._function = "wifi"
-    await speaker.update_player_info()
-    assert fake.calls.count("GetShuffleMode") == calls_before + 1
+    assert "GetShuffleMode" not in fake.calls
+    assert "GetRepeatMode" not in fake.calls
+    # Everything that does work in an external input is still asked for.
+    assert "GetVolume" in fake.calls
+    assert "GetMute" in fake.calls
 
 
 @pytest.mark.asyncio
-async def test_update_speaker_settings_tolerates_unanswered_preset_call():
-    """update_speaker_settings() must tolerate the speaker ignoring the
-    preset-list query in a non-radio source."""
+async def test_update_player_info_still_asks_on_wifi():
+    """On Wi-Fi the player queries must still be made."""
+    speaker = Speaker(TEST_IP)
+    fake = _RecordingClient(timeout_methods=set())
+    speaker.client.request = fake.request  # type: ignore[assignment]
+
+    speaker.attribute._function = "wifi"
+    await speaker.update_player_info()
+
+    assert "GetShuffleMode" in fake.calls
+    assert "GetRepeatMode" in fake.calls
+
+
+@pytest.mark.asyncio
+async def test_update_speaker_settings_skips_presets_outside_wifi():
+    """The TuneIn preset list is only asked for on Wi-Fi."""
     speaker = Speaker(TEST_IP)
     fake = _RecordingClient(timeout_methods={"GetPresetList"})
     speaker.client.request = fake.request  # type: ignore[assignment]
 
-    speaker.attribute._function = "hdmi"
-
-    # Completes on all-fixes; raises ApiCallTimeoutError on master.
+    speaker.attribute._function = "hdmi1"
     await speaker.update_speaker_settings()
 
-    assert ("hdmi", "GetPresetList") in speaker._unsupported
+    assert "GetPresetList" not in fake.calls
+    # The equalizer list is not source dependent.
+    assert "Get7BandEQList" in fake.calls
 
 
 # ======================================================================
